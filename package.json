@@ -1,15 +1,10 @@
 {
   "name": "sj-fax-proxy",
-  "version": "1.0.0",
-  "description": "Popbill Fax Proxy Server",
+  "version": "2.0.0",
+  "description": "SJ인베스트 팝빌 FAX 프록시 서버",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "popbill": "^1.31.1"
   },
   "engines": {
     "node": ">=18"
