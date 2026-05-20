@@ -1,7 +1,6 @@
 {
   "name": "sj-fax-proxy",
   "version": "2.0.0",
-  "description": "SJ인베스트 팝빌 FAX 프록시 서버",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
