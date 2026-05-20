@@ -10,6 +10,10 @@ const BIZ_NUM    = process.env.POPBILL_BIZ_NUM    || '4870902381';
 const SENDER_NUM = process.env.POPBILL_SENDER_NUM || '05041718675';
 const PORT       = process.env.PORT               || 3000;
 
+/* 팝빌 공식 도메인 (auth.linkhub.co.kr) */
+const AUTH_HOST  = 'auth.linkhub.co.kr';
+const FAX_HOST   = 'fax.linkhub.co.kr';
+
 function _isAllowedOrigin(o) {
   if (!o) return true;
   return o.includes('genspark.site') || o.includes('genspark.ai') ||
@@ -31,7 +35,7 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/' || p === '/health') {
     res.writeHead(200);
-    res.end(JSON.stringify({ ok: true, service: 'SJ Fax Proxy', time: new Date().toISOString() }));
+    res.end(JSON.stringify({ ok: true, service: 'SJ Fax Proxy v2', time: new Date().toISOString() }));
     return;
   }
 
@@ -55,7 +59,7 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ ok: false, message: 'Not Found' }));
 });
 
-server.listen(PORT, () => console.log('✅ SJ Fax Proxy running on port ' + PORT));
+server.listen(PORT, () => console.log('✅ SJ Fax Proxy v2 running on port ' + PORT));
 
 async function handleSendFax(body) {
   const { receiverNum, receiverName='보험사', title='보험금 청구서', pdfBase64, senderName='SJ인베스트' } = body;
@@ -63,11 +67,14 @@ async function handleSendFax(body) {
   if (to.length < 8)  return { status:400, body:{ ok:false, message:'수신 팩스번호가 올바르지 않습니다.' } };
   if (!pdfBase64)     return { status:400, body:{ ok:false, message:'PDF 데이터가 없습니다.' } };
   try {
-    const token      = await _getToken();
+    console.log('[1] 토큰 발급 시작');
+    const token = await _getToken();
+    console.log('[2] 토큰 발급 성공:', token.substring(0,20)+'...');
     const receiptNum = await _sendFax({ token, senderNum:SENDER_NUM.replace(/\D/g,''), senderName, receiverNum:to, receiverName, title, pdfBase64 });
+    console.log('[3] 전송 완료:', receiptNum);
     return { status:200, body:{ ok:true, receiptNum, message:'팩스 전송 완료 (접수번호: '+receiptNum+')' } };
   } catch(e) {
-    console.error('[send-fax]', e.message);
+    console.error('[ERR]', e.message);
     return { status:500, body:{ ok:false, message:e.message } };
   }
 }
@@ -78,25 +85,32 @@ async function _getToken() {
   const signature = crypto.createHmac('sha1', Buffer.from(SECRET_KEY,'base64'))
                           .update(LINK_ID + utcTime + nonce, 'utf8').digest('base64');
   const auth = 'LINKHUB ' + LINK_ID + ',' + utcTime + ',' + nonce + ',' + signature;
-  const text = await _get('auth.linkhub.io', '/oauth2/token?scope=190', { Authorization: auth });
-  const r    = JSON.parse(text);
-  if (r.code !== undefined && r.code < 0) throw new Error('링크허브 오류 ['+r.code+']: '+r.message);
+  console.log('[token] AUTH_HOST:', AUTH_HOST);
+  console.log('[token] authHeader:', auth.substring(0,60)+'...');
+  const text = await _get(AUTH_HOST, '/oauth2/token?scope=190', { Authorization: auth });
+  console.log('[token] 응답:', text.substring(0,200));
+  const r = JSON.parse(text);
+  if (r.code !== undefined && r.code < 0) throw new Error('링크허브 인증 오류 ['+r.code+']: '+r.message);
   if (!r.session_token) throw new Error('session_token 없음: '+text);
   return r.session_token;
 }
 
 async function _sendFax({ token, senderNum, senderName, receiverNum, receiverName, title, pdfBase64 }) {
   const body = {
-    SenderNum  : senderNum,   SenderName : senderName,
-    ReceiveNum : receiverNum, ReceiveName: receiverName,
-    Title      : title,       Memo       : title,
+    SenderNum  : senderNum,
+    SenderName : senderName,
+    ReceiveNum : receiverNum,
+    ReceiveName: receiverName,
+    Title      : title,
+    Memo       : title,
     FileNames  : ['claim.pdf'],
     FileData   : [pdfBase64],
-    AdsYN      : false,       ReserveDT  : '',
+    AdsYN      : false,
+    ReserveDT  : '',
   };
-  console.log('[send-fax] → ReceiveNum:', receiverNum);
-  const text = await _post('fax.linkhub.io', '/'+BIZ_NUM+'/FAX', { Authorization:'Bearer '+token }, body);
-  console.log('[send-fax] 팝빌 응답:', text);
+  console.log('[fax] FAX_HOST:', FAX_HOST, '/ BIZ_NUM:', BIZ_NUM);
+  const text = await _post(FAX_HOST, '/'+BIZ_NUM+'/FAX', { Authorization:'Bearer '+token }, body);
+  console.log('[fax] 팝빌 응답:', text.substring(0,300));
   const r = JSON.parse(text);
   if (r.code !== undefined && r.code !== 1) throw new Error('팝빌 오류 ['+r.code+']: '+(r.message||''));
   return r.receiptNum || r.ReceiptNum || 'OK';
