@@ -94,5 +94,32 @@ async function _sendFax({ token, senderNum, senderName, receiverNum, receiverNam
     FileData   : [pdfBase64],
     AdsYN      : false,       ReserveDT  : '',
   };
-  console.log('[send-fax] →', BIZ_NUM, 'ReceiveNum:', receiverNum);
-  const text = await _post('fax.linkhub.io', '/'+BIZ_NUM+'/FAX', { Authorization:'<span class="cursor">█</span>
+  console.log('[send-fax] → ReceiveNum:', receiverNum);
+  const text = await _post('fax.linkhub.io', '/'+BIZ_NUM+'/FAX', { Authorization:'Bearer '+token }, body);
+  console.log('[send-fax] 팝빌 응답:', text);
+  const r = JSON.parse(text);
+  if (r.code !== undefined && r.code !== 1) throw new Error('팝빌 오류 ['+r.code+']: '+(r.message||''));
+  return r.receiptNum || r.ReceiptNum || 'OK';
+}
+
+function _get(host, path, headers) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname:host, port:443, path, method:'GET', headers:{ Accept:'application/json', ...headers } },
+      res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d)); }
+    );
+    req.on('error', reject); req.end();
+  });
+}
+
+function _post(host, path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const s = JSON.stringify(body);
+    const req = https.request(
+      { hostname:host, port:443, path, method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(s), ...headers } },
+      res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve(d)); }
+    );
+    req.on('error', reject); req.write(s); req.end();
+  });
+}
