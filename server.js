@@ -1,61 +1,98 @@
-const express = require('express');
-const cors = require('cors');
-const { FaxService } = require('popbill');
+'use strict';
+const https  = require('https');
+const http   = require('http');
+const crypto = require('crypto');
+const url    = require('url');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+const LINK_ID    = process.env.POPBILL_LINK_ID    || 'FIRSTSAVEPLAN';
+const SECRET_KEY = process.env.POPBILL_SECRET_KEY || 'fQtoQ6GIYvrPdmHit6O3TGEZKYYm++UwulID30FTwIc=';
+const BIZ_NUM    = process.env.POPBILL_BIZ_NUM    || '4870902381';
+const SENDER_NUM = process.env.POPBILL_SENDER_NUM || '05041718675';
+const PORT       = process.env.PORT               || 3000;
 
-// Render 환경변수에서 설정값 로드
-const LinkID = process.env.POPBILL_LINK_ID;
-const SecretKey = process.env.POPBILL_SECRET_KEY;
-const CorpNum = process.env.POPBILL_BIZ_NUM;
-const SenderNum = process.env.POPBILL_SENDER_NUM;
+function _isAllowedOrigin(o) {
+  if (!o) return true;
+  return o.includes('genspark.site') || o.includes('genspark.ai') ||
+         o.includes('netlify.app')   || o.includes('onrender.com') ||
+         o.startsWith('http://localhost') || o.startsWith('http://127.0.0.1');
+}
 
-// 팝빌 서비스 초기화
-const faxService = FaxService({
-  LinkID: LinkID,
-  SecretKey: SecretKey,
-  IsTest: false, // 실운영 모드
-  IPRestrictOnOff: false,
-});
+const server = http.createServer(async (req, res) => {
+  const origin = req.headers['origin'] || '';
+  const ao = _isAllowedOrigin(origin) ? origin : '*';
+  res.setHeader('Access-Control-Allow-Origin',  ao);
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
-// 팩스 전송 API 엔드포인트
-app.post('/send-fax', (req, res) => {
-  const { receiverNum, receiverName, fileLocalPath, title } = req.body;
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  if (!receiverNum || !fileLocalPath) {
-    return res.status(400).json({ error: '수신 번호와 파일 경로는 필수입니다.' });
+  const p = url.parse(req.url, true).pathname;
+
+  if (p === '/' || p === '/health') {
+    res.writeHead(200);
+    res.end(JSON.stringify({ ok: true, service: 'SJ Fax Proxy', time: new Date().toISOString() }));
+    return;
   }
 
-  const faxInfo = {
-    receiverNum: receiverNum,
-    receiverName: receiverName || '',
-    senderNum: SenderNum,
-    title: title || '팩스 전송',
+  if (p === '/send-fax' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const result = await handleSendFax(JSON.parse(body || '{}'));
+        res.writeHead(result.status);
+        res.end(JSON.stringify(result.body));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ ok: false, message: e.message }));
+      }
+    });
+    return;
+  }
+
+  res.writeHead(404);
+  res.end(JSON.stringify({ ok: false, message: 'Not Found' }));
+});
+
+server.listen(PORT, () => console.log('✅ SJ Fax Proxy running on port ' + PORT));
+
+async function handleSendFax(body) {
+  const { receiverNum, receiverName='보험사', title='보험금 청구서', pdfBase64, senderName='SJ인베스트' } = body;
+  const to = (receiverNum || '').replace(/\D/g, '');
+  if (to.length < 8)  return { status:400, body:{ ok:false, message:'수신 팩스번호가 올바르지 않습니다.' } };
+  if (!pdfBase64)     return { status:400, body:{ ok:false, message:'PDF 데이터가 없습니다.' } };
+  try {
+    const token      = await _getToken();
+    const receiptNum = await _sendFax({ token, senderNum:SENDER_NUM.replace(/\D/g,''), senderName, receiverNum:to, receiverName, title, pdfBase64 });
+    return { status:200, body:{ ok:true, receiptNum, message:'팩스 전송 완료 (접수번호: '+receiptNum+')' } };
+  } catch(e) {
+    console.error('[send-fax]', e.message);
+    return { status:500, body:{ ok:false, message:e.message } };
+  }
+}
+
+async function _getToken() {
+  const utcTime   = new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,'');
+  const nonce     = crypto.randomBytes(8).toString('hex');
+  const signature = crypto.createHmac('sha1', Buffer.from(SECRET_KEY,'base64'))
+                          .update(LINK_ID + utcTime + nonce, 'utf8').digest('base64');
+  const auth = 'LINKHUB ' + LINK_ID + ',' + utcTime + ',' + nonce + ',' + signature;
+  const text = await _get('auth.linkhub.io', '/oauth2/token?scope=190', { Authorization: auth });
+  const r    = JSON.parse(text);
+  if (r.code !== undefined && r.code < 0) throw new Error('링크허브 오류 ['+r.code+']: '+r.message);
+  if (!r.session_token) throw new Error('session_token 없음: '+text);
+  return r.session_token;
+}
+
+async function _sendFax({ token, senderNum, senderName, receiverNum, receiverName, title, pdfBase64 }) {
+  const body = {
+    SenderNum  : senderNum,   SenderName : senderName,
+    ReceiveNum : receiverNum, ReceiveName: receiverName,
+    Title      : title,       Memo       : title,
+    FileNames  : ['claim.pdf'],
+    FileData   : [pdfBase64],
+    AdsYN      : false,       ReserveDT  : '',
   };
-
-  faxService.sendFax(CorpNum, faxInfo, fileLocalPath, 1, (error, receiptNum) => {
-    if (error) {
-      console.error('팩스 전송 실패:', error);
-      // 의뢰하신 부분: data.message가 없을 때 data.error(error.message)가 가도록 폴백 처리
-      return res.status(500).json({ 
-        success: false,
-        error: error.message || '알 수 없는 전송 에러가 발생했습니다.' 
-      });
-    }
-    console.log('팩스 전송 성공! 접수번호:', receiptNum);
-    res.json({ success: true, receiptNum: receiptNum });
-  });
-});
-
-// 기본 루트 확인용
-app.get('/', (req, res) => {
-  res.send('Fax Proxy Server is Running!');
-});
-
-// 서버 포트 실행
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+  console.log('[send-fax] →', BIZ_NUM, 'ReceiveNum:', receiverNum);
+  const text = await _post('fax.linkhub.io', '/'+BIZ_NUM+'/FAX', { Authorization:'<span class="cursor">█</span>
